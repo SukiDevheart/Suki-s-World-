@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Suki's World</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; touch-action: none; font-family: 'Courier New', Courier, monospace; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+        #notification-area { position: absolute; top: 8%; left: 50%; transform: translateX(-50%); text-align: center; width: 85%; max-width: 500px; z-index: 20; }
+        .notification { background: rgba(0, 0, 0, 0.9); border: 2px solid #fff; color: #fff; padding: 10px 15px; border-radius: 8px; font-size: 0.9rem; font-weight: bold; text-transform: uppercase; margin-bottom: 5px; opacity: 0; transition: opacity 0.3s; box-shadow: 0 0 10px rgba(255, 255, 255, 0.5); display: inline-block; max-width: 100%; }
+        .notification.show { opacity: 1; }
+        .controls-container { position: absolute; bottom: 20px; pointer-events: auto; display: flex; gap: 10px; }
+        #d-pad { left: 20px; display: grid; grid-template-columns: 60px 60px 60px; grid-template-rows: 60px 60px; }
+        #action-pad { right: 20px; display: flex; align-items: center; justify-content: center; }
+        .btn { width: 60px; height: 60px; background: rgba(255, 255, 255, 0.2); border: 2px solid rgba(255, 255, 255, 0.5); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 24px; user-select: none; backdrop-filter: blur(4px); transition: background 0.1s, transform 0.1s; }
+        .btn:active { background: rgba(255, 255, 255, 0.5); transform: scale(0.95); }
+        #btn-up { grid-column: 2; grid-row: 1; }
+        #btn-left { grid-column: 1; grid-row: 2; }
+        #btn-down { grid-column: 2; grid-row: 2; }
+        #btn-right { grid-column: 3; grid-row: 2; }
+        #btn-jump { width: 80px; height: 80px; background: rgba(255, 100, 100, 0.3); border-color: rgba(255, 100, 100, 0.6); }
+        #btn-jump:active { background: rgba(255, 100, 100, 0.6); }
+        #start-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; pointer-events: auto; }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; background: linear-gradient(45deg, #ff69b4, #9370db); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 900; letter-spacing: -2px; text-align: center; }
+        p { font-size: 1rem; color: #ccc; margin-bottom: 2rem; max-width: 600px; text-align: center; padding: 0 20px; }
+        #start-btn { padding: 15px 40px; font-size: 1.5rem; background: #fff; color: #000; border: none; border-radius: 50px; cursor: pointer; font-weight: bold; box-shadow: 0 0 20px rgba(255,255,255,0.5); transition: transform 0.2s; }
+        #start-btn:hover { transform: scale(1.1); }
+        #hud { position: absolute; top: 20px; left: 20px; color: white; font-size: 14px; text-shadow: 1px 1px 0 #000; }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="ui-layer">
+        <div id="hud">
+            <div>SPEED: <span id="speed-val">100%</span></div>
+            <div>STATE: <span id="state-val">NORMAL</span></div>
+        </div>
+        <div id="notification-area"></div>
+        <div id="d-pad" class="controls-container">
+            <div class="btn" id="btn-up">▲</div>
+            <div class="btn" id="btn-left">◀</div>
+            <div class="btn" id="btn-down">▼</div>
+            <div class="btn" id="btn-right">▶</div>
+        </div>
+        <div id="action-pad" class="controls-container">
+            <div class="btn" id="btn-jump">JUMP</div>
+        </div>
+    </div>
+    <div id="start-screen">
+        <h1>Suki's World</h1>
+        <p>Random Chaos Edition</p>
+        <p>Drag to pan • Pinch to zoom<br>Touch objects for crazy effects!</p>
+        <button id="start-btn">ENTER WORLD</button>
+    </div>
+    <script>
+        const WORLD_SIZE = 200, TERRAIN_HEIGHT = 8, MOVE_SPEED_BASE = 0.15, JUMP_FORCE = 0.25, GRAVITY = 0.01;
+        let scene, camera, renderer, playerGroup, headMesh, bodyMesh, clock = new THREE.Clock(), simplex = new SimplexNoise();
+        let isPlaying = false, velocity = new THREE.Vector3(), isGrounded = false, playerSpeedMultiplier = 1, isInvisible = false;
+        let chaosObjects = [], clouds = [], moveState = { forward: 0, right: 0 }, synth, chaosSynth;
+        let cameraAngle = { x: 0, y: 0.3 }, cameraDistance = 12;
+
+        const EFFECTS = [
+            { name: "SUKI POWER", type: 'speed', val: 4.0, dur: 5000, color: '#ff69b4' },
+            { name: "RAINBOW MODE", type: 'rainbow', val: 0, dur: 4000, color: '#ff00ff' },
+            { name: "GIANT SUKI", type: 'grow', val: 2.5, dur: 3000, color: '#00ff00' },
+            { name: "GHOST MODE", type: 'ghost', val: 0, dur: 4000, color: '#ffffff' },
+            { name: "SPEED BOOST", type: 'speed', val: 2.5, dur: 3000, color: '#ffff00' },
+            { name: "SLOW MOTION", type: 'speed', val: 0.3, dur: 4000, color: '#ff0000' },
+            { name: "INVISIBILITY", type: 'invis', val: true, dur: 5000, color: '#00ffff' },
+            { name: "SUPER JUMP", type: 'jump', val: 2, dur: 0, color: '#00ff00' },
+            { name: "CHAOS SPIN", type: 'spin', val: 0, dur: 2000, color: '#ff00ff' }
+        ];
+
+        document.getElementById('start-btn').addEventListener('click', initGame);
+
+        function initGame() {
+            document.getElementById('start-screen').style.display = 'none';
+            initAudio(); initThree(); createWorld(); setupControls(); setupCameraControls();
+            isPlaying = true; animate();
+        }
+
+        function initAudio() {
+            synth = new Tone.PolySynth(Tone.Synth).toDestination(); synth.volume.value = -10;
+            chaosSynth = new Tone.FMSynth({ harmonicity: 3, modulationIndex: 10, oscillator: { type: "sine" }, envelope: { attack: 0.01, decay: 0.01, sustain: 1, release: 0.5 }, modulation: { type: "square" }, modulationEnvelope: { attack: 0.5, decay: 0, sustain: 1, release: 0.5 } }).toDestination();
+            chaosSynth.volume.value = -8; Tone.start();
+        }
+
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene(); scene.background = new THREE.Color(0x87CEEB); scene.fog = new THREE.Fog(0x87CEEB, 20, 90);
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setSize(window.innerWidth, window.innerHeight); renderer.shadowMap.enabled = true; container.appendChild(renderer.domElement);
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6); hemiLight.position.set(0, 200, 0); scene.add(hemiLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8); dirLight.position.set(50, 100, 50); dirLight.castShadow = true; dirLight.shadow.camera.top = 50; dirLight.shadow.camera.bottom = -50; dirLight.shadow.camera.left = -50; dirLight.shadow.camera.right = 50; scene.add(dirLight);
+            window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+        }
+
+        function createWorld() {
+            const geometry = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, 128, 128); geometry.rotateX(-Math.PI / 2);
+            for (let i = 0; i < geometry.attributes.position.count; i++) {
+                const x = geometry.attributes.position.getX(i), z = geometry.attributes.position.getZ(i);
+                geometry.attributes.position.setY(i, (simplex.noise2D(x * 0.02, z * 0.02) * TERRAIN_HEIGHT) + (simplex.noise2D(x * 0.1, z * 0.1) * 1));
+            }
+            geometry.computeVertexNormals();
+            terrainMesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x55aa55, roughness: 0.8, flatShading: true })); terrainMesh.receiveShadow = true; scene.add(terrainMesh);
+
+            playerGroup = new THREE.Group();
+            bodyMesh = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.2, 0.5), new THREE.MeshStandardMaterial({ color: 0x8B4513 })); bodyMesh.position.y = 0.6; bodyMesh.castShadow = true; playerGroup.add(bodyMesh);
+            headMesh = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshStandardMaterial({ color: 0x32CD32 })); headMesh.position.y = 1.5; headMesh.castShadow = true; playerGroup.add(headMesh);
+            const eyeGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1), eyeMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+            const leftEye = new THREE.Mesh(eyeGeo, eyeMat); leftEye.position.set(-0.15, 1.6, 0.3);
+            const rightEye = new THREE.Mesh(eyeGeo, eyeMat); rightEye.position.set(0.15, 1.6, 0.3);
+            playerGroup.add(leftEye); playerGroup.add(rightEye); scene.add(playerGroup);
+
+            for(let i=0; i<15; i++) createCloud();
+            for(let i=0; i<30; i++) spawnChaosObject();
+        }
+
+        function getTerrainHeight(x, z) { return (simplex.noise2D(x * 0.02, z * 0.02) * TERRAIN_HEIGHT) + (simplex.noise2D(x * 0.1, z * 0.1) * 1); }
+
+        function createCloud() {
+            const cloudGroup = new THREE.Group();
+            for(let i=0; i<Math.floor(Math.random()*3)+3; i++) {
+                const mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(1, 0), new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, transparent: true, opacity: 0.9 }));
+                mesh.position.set((Math.random()-0.5)*3, (Math.random()-0.5)*1, (Math.random()-0.5)*2); mesh.scale.setScalar(Math.random()*0.5+0.8); cloudGroup.add(mesh);
+            }
+            cloudGroup.position.set((Math.random()-0.5)*WORLD_SIZE, 15+Math.random()*10, (Math.random()-0.5)*WORLD_SIZE); scene.add(cloudGroup); clouds.push({ mesh: cloudGroup, speed: Math.random()*0.02+0.01 });
+        }
+
+        function spawnChaosObject() {
+            const types = ['box', 'sphere', 'cone', 'torus'], type = types[Math.floor(Math.random()*types.length)], color = Math.random()*0xffffff;
+            let geo; if(type==='box') geo=new THREE.BoxGeometry(1,1,1); else if(type==='sphere') geo=new THREE.SphereGeometry(0.6,16,16); else if(type==='cone') geo=new THREE.ConeGeometry(0.6,1.5,16); else geo=new THREE.TorusGeometry(0.5,0.2,8,20);
+            const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.5, wireframe: Math.random()>0.8 }));
+            const x=(Math.random()-0.5)*WORLD_SIZE*0.8, z=(Math.random()-0.5)*WORLD_SIZE*0.8; mesh.position.set(x, getTerrainHeight(x,z)+1+Math.random(), z); mesh.castShadow = true;
+            mesh.userData = { rotSpeed: { x: Math.random()*0.05, y: Math.random()*0.05 }, floatOffset: Math.random()*Math.PI*2 }; scene.add(mesh); chaosObjects.push(mesh);
+        }
+
+        function setupControls() {
+            const bindBtn = (id, key, val) => {
+                const btn = document.getElementById(id);
+                const start = (e) => { e.preventDefault(); if(key==='jump') jump(); else moveState[key]=val; };
+                const end = (e) => { e.preventDefault(); if(key!=='jump') moveState[key]=0; };
+                btn.addEventListener('mousedown', start); btn.addEventListener('touchstart', start); btn.addEventListener('mouseup', end); btn.addEventListener('touchend', end); btn.addEventListener('mouseleave', end);
+            };
+            bindBtn('btn-up','forward',1); bindBtn('btn-down','forward',-1); bindBtn('btn-left','right',-1); bindBtn('btn-right','right',1); bindBtn('btn-jump','jump');
+            window.addEventListener('keydown', (e) => { if(e.key==='w'||e.key==='ArrowUp') moveState.forward=1; if(e.key==='s'||e.key==='ArrowDown') moveState.forward=-1; if(e.key==='a'||e.key==='ArrowLeft') moveState.right=-1; if(e.key==='d'||e.key==='ArrowRight') moveState.right=1; if(e.key===' ') jump(); });
+            window.addEventListener('keyup', (e) => { if(['w','ArrowUp','s','ArrowDown'].includes(e.key)) moveState.forward=0; if(['a','ArrowLeft','d','ArrowRight'].includes(e.key)) moveState.right=0; });
+        }
+
+        function setupCameraControls() {
+            let isDragging = false, previousTouch = { x: 0, y: 0 }, initialPinchDistance = null, initialCameraDistance = 12;
+            const canvas = document.getElementById('canvas-container');
+            
+            canvas.addEventListener('touchstart', (e) => {
+                if(e.target.closest('.btn')) return;
+                if(e.touches.length === 1) { isDragging = true; previousTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }
+                else if(e.touches.length === 2) { isDragging = false; initialPinchDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); initialCameraDistance = cameraDistance; }
+            }, { passive: false });
+            
+            canvas.addEventListener('touchmove', (e) => {
+                if(e.target.closest('.btn')) return; e.preventDefault();
+                if(e.touches.length === 2 && initialPinchDistance) {
+                    const currentPinchDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+                    cameraDistance = Math.max(5, Math.min(50, initialCameraDistance / (currentPinchDistance / initialPinchDistance)));
+                } else if(e.touches.length === 1 && isDragging) {
+                    const deltaX = e.touches[0].clientX - previousTouch.x;
+                    const deltaY = e.touches[0].clientY - previousTouch.y;
+                    cameraAngle.x -= deltaX * 0.008;
+                    cameraAngle.y = Math.max(0.05, Math.min(1.8, cameraAngle.y - deltaY * 0.008));
+                    previousTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                }
+            }, { passive: false });
+            
+            canvas.addEventListener('touchend', (e) => { if(e.touches.length < 2) initialPinchDistance = null; if(e.touches.length === 0) isDragging = false; });
+            
+            canvas.addEventListener('mousedown', (e) => { if(!e.target.closest('.btn')) { isDragging = true; previousTouch = { x: e.clientX, y: e.clientY }; } });
+            window.addEventListener('mousemove', (e) => { if(isDragging) { cameraAngle.x -= (e.clientX - previousTouch.x) * 0.008; cameraAngle.y = Math.max(0.05, Math.min(1.8, cameraAngle.y - (e.clientY - previousTouch.y) * 0.008)); previousTouch = { x: e.clientX, y: e.clientY }; } });
+            window.addEventListener('mouseup', () => { isDragging = false; });
+            canvas.addEventListener('wheel', (e) => { e.preventDefault(); cameraDistance = Math.max(5, Math.min(50, cameraDistance + e.deltaY * 0.01)); }, { passive: false });
+        }
+
+        function jump() { if(isGrounded) { velocity.y=JUMP_FORCE; isGrounded=false; synth.triggerAttackRelease("C4","8n"); } }
+
+        function triggerEffect() {
+            const effect = EFFECTS[Math.floor(Math.random()*EFFECTS.length)];
+            const el = document.createElement('div'); el.className = 'notification'; el.innerText = effect.name; el.style.borderColor = effect.color; el.style.color = effect.color;
+            document.getElementById('notification-area').appendChild(el); setTimeout(() => el.classList.add('show'), 10);
+            chaosSynth.triggerAttackRelease("C2","8n"); setTimeout(() => chaosSynth.triggerAttackRelease("E2","8n"), 100);
+            
+            if(effect.type==='speed') {
+                playerSpeedMultiplier = effect.val; document.getElementById('speed-val').innerText = Math.round(effect.val*100)+'%'; document.getElementById('speed-val').style.color = effect.color;
+                setTimeout(() => { playerSpeedMultiplier=1; document.getElementById('speed-val').innerText='100%'; document.getElementById('speed-val').style.color='white'; }, effect.dur);
+            } else if(effect.type==='rainbow') {
+                let hue = 0; const rainbowInt = setInterval(() => { hue = (hue+15)%360; headMesh.material.color.setHSL(hue/360,1,0.5); bodyMesh.material.color.setHSL(((hue+180)%360)/360,1,0.5); }, 50);
+                document.getElementById('state-val').innerText='RAINBOW'; document.getElementById('state-val').style.color=effect.color;
+                setTimeout(() => { clearInterval(rainbowInt); headMesh.material.color.setHex(0x32CD32); bodyMesh.material.color.setHex(0x8B4513); document.getElementById('state-val').innerText='NORMAL'; document.getElementById('state-val').style.color='white'; }, effect.dur);
+            } else if(effect.type==='grow') {
+                playerGroup.scale.setScalar(effect.val); document.getElementById('state-val').innerText='GIANT'; document.getElementById('state-val').style.color=effect.color;
+                setTimeout(() => { playerGroup.scale.setScalar(1); document.getElementById('state-val').innerText='NORMAL'; document.getElementById('state-val').style.color='white'; }, effect.dur);
+            } else if(effect.type==='ghost') {
+                isInvisible = true; headMesh.material.transparent = true; headMesh.material.opacity = 0.2; bodyMesh.material.transparent = true; bodyMesh.material.opacity = 0.2; document.getElementById('state-val').innerText='GHOST'; document.getElementById('state-val').style.color='#aaa';
+                const ghostFloat = setInterval(() => { if(isGrounded) velocity.y = 0.15; }, 100);
+                setTimeout(() => { clearInterval(ghostFloat); isInvisible=false; headMesh.material.opacity=1; bodyMesh.material.opacity=1; headMesh.material.transparent=false; bodyMesh.material.transparent=false; document.getElementById('state-val').innerText='NORMAL'; document.getElementById('state-val').style.color='white'; }, effect.dur);
+            } else if(effect.type==='jump') {
+                velocity.y = JUMP_FORCE*effect.val; isGrounded = false;
+            } else if(effect.type==='spin') {
+                const spinInt = setInterval(() => { playerGroup.rotation.y += 0.5; }, 16);
+                setTimeout(() => { clearInterval(spinInt); playerGroup.rotation.y = 0; }, effect.dur);
+            } else if(effect.type==='invis') {
+                isInvisible = true; headMesh.material.transparent = true; headMesh.material.opacity = 0.2; bodyMesh.material.transparent = true; bodyMesh.material.opacity = 0.2; document.getElementById('state-val').innerText = 'INVISIBLE';
+                setTimeout(() => { isInvisible=false; headMesh.material.opacity=1; bodyMesh.material.opacity=1; headMesh.material.transparent=false; bodyMesh.material.transparent=false; document.getElementById('state-val').innerText='NORMAL'; }, effect.dur);
+            }
+            setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 2500);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate); if(!isPlaying) return;
+            const time = clock.getElapsedTime(), speed = MOVE_SPEED_BASE * playerSpeedMultiplier;
+            const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion); forward.y=0; forward.normalize();
+            const right = new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion); right.y=0; right.normalize();
+            const moveDir = new THREE.Vector3();
+            if(moveState.forward!==0) moveDir.add(forward.multiplyScalar(moveState.forward));
+            if(moveState.right!==0) moveDir.add(right.multiplyScalar(moveState.right));
+            
+            if(moveDir.length()>0) {
+                moveDir.normalize(); playerGroup.position.add(moveDir.multiplyScalar(speed));
+                const targetRot = Math.atan2(moveDir.x, moveDir.z); playerGroup.rotation.y += (targetRot - playerGroup.rotation.y)*0.1;
+                playerGroup.position.y += Math.sin(time*15)*0.02; bodyMesh.rotation.x = Math.sin(time*15)*0.1;
+            }
+            
+            const currentY = getTerrainHeight(playerGroup.position.x, playerGroup.position.z);
+            velocity.y -= GRAVITY; playerGroup.position.y += velocity.y;
+            if(playerGroup.position.y < currentY+1) { playerGroup.position.y = currentY+1; velocity.y=0; isGrounded=true; } else { isGrounded=false; }
+            
+            const limit = WORLD_SIZE/2-2;
+            playerGroup.position.x = Math.max(-limit, Math.min(limit, playerGroup.position.x));
+            playerGroup.position.z = Math.max(-limit, Math.min(limit, playerGroup.position.z));
+            
+            const camX = playerGroup.position.x + Math.sin(cameraAngle.x) * cameraDistance * Math.cos(cameraAngle.y);
+            const camY = playerGroup.position.y + 2 + Math.sin(cameraAngle.y) * cameraDistance;
+            const camZ = playerGroup.position.z + Math.cos(cameraAngle.x) * cameraDistance * Math.cos(cameraAngle.y);
+            camera.position.set(camX, camY, camZ); camera.lookAt(playerGroup.position.x, playerGroup.position.y + 1, playerGroup.position.z);
+            
+            chaosObjects.forEach(obj => {
+                obj.position.y += Math.sin(time*2+obj.userData.floatOffset)*0.01; obj.rotation.x+=obj.userData.rotSpeed.x; obj.rotation.y+=obj.userData.rotSpeed.y;
+                if(playerGroup.position.distanceTo(obj.position) < 1.5) { triggerEffect(); const x=(Math.random()-0.5)*WORLD_SIZE*0.8, z=(Math.random()-0.5)*WORLD_SIZE*0.8; obj.position.set(x, getTerrainHeight(x,z)+2, z); }
+            });
+            
+            clouds.forEach(c => { c.mesh.position.x += c.speed; if(c.mesh.position.x>WORLD_SIZE/2) c.mesh.position.x=-WORLD_SIZE/2; });
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
